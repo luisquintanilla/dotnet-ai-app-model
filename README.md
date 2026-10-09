@@ -3,10 +3,10 @@
 This repository is a small, runnable .NET 10 reference app for a support-case vertical slice. It uses the stable .NET/ASP.NET Core hosting model and Microsoft.Extensions.AI (`IChatClient`) directly:
 
 - the default `scripted` provider is deterministic and requires no credentials;
-- `SupportApplication` owns the support use case: conversation state, model context, request-scoped tools, action policy, side effects, and response projection;
+- `SupportApplication` is the support use-case coordinator; scoped support services own conversation preparation/persistence, model context and request-scoped tools, and policy-gated actions;
 - the read-only ticket lookup and policy-gated specialist follow-up tools are created with `AIFunctionFactory` and invoked by the MEAI `UseFunctionInvocation` pipeline;
 - buffered, streaming SSE, and bounded in-memory queue transports invoke the same application service;
-- `SupportWorker` consumes support-specific work-item IDs with normal `BackgroundService`, `Channel<T>`, and dependency injection;
+- `SupportWorker` consumes support-specific work-item IDs with normal `BackgroundService`, `Channel<T>`, and `IServiceScopeFactory`; a scoped `SupportWorkItemProcessor` owns each item's lifecycle;
 - conversation, action, and work-item stores are domain-named in-memory ports and adapters so the behavior is deterministic and easy to replace.
 
 The app intentionally does not add a custom AI harness, universal response/event model, OpenAI-compatible `/responses` endpoints, durable run storage, retries, or suspend/resume behavior.
@@ -69,6 +69,30 @@ Invoke-RestMethod http://localhost:5000/support/queue/{workItemId}
 The status moves through `pending`, `processing`, `completed`, or `failed`.
 Channel delivery is deliberately separate from work-item state, and a
 work-item failure does not stop the worker from processing later items.
+
+## Composition boundary
+
+The application uses ordinary .NET dependency injection without adding a
+generic AI harness or wrapping `IChatClient`. `SupportApplication` coordinates
+the buffered and streaming support use cases. Its scoped collaborators are
+support-local services with cohesive responsibilities:
+
+- `SupportConversationService` resolves correlation/conversation identity and
+  persists customer and completed assistant turns;
+- `SupportModelContextFactory` builds MEAI messages and `ChatOptions`, while
+  `SupportActionToolFactory` creates the request-scoped ticket and specialist
+  tools;
+- `SupportSpecialistFollowUpService` applies support policy and idempotency
+  before calling the action port;
+- `SupportWorkSubmissionService` creates and enqueues work items, including
+  marking a created item failed when the bounded channel is full;
+- `SupportWorkItemProcessor` owns status transitions, failure isolation, and
+  processing logs for one work-item ID.
+
+The singleton `SupportWorker` only consumes IDs and creates a scope for each
+item through `IServiceScopeFactory`. HTTP and SSE endpoints bind, validate,
+invoke an injected service, and serialize the result; they do not compose
+stores, channels, or application policy themselves.
 
 To request the policy-gated side effect, provide a ticket, customer, and
 explicit language such as "Please escalate this to a specialist." The

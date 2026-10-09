@@ -42,6 +42,69 @@ public sealed class SupportActionPolicy
     }
 }
 
+public sealed class SupportSpecialistFollowUpService
+{
+    private const string ActionName = "request_specialist_follow_up";
+
+    private readonly SupportActionPolicy _actionPolicy;
+    private readonly ISupportActionStore _actionStore;
+    private readonly TimeProvider _timeProvider;
+
+    public SupportSpecialistFollowUpService(
+        SupportActionPolicy actionPolicy,
+        ISupportActionStore actionStore,
+        TimeProvider timeProvider)
+    {
+        _actionPolicy = actionPolicy;
+        _actionStore = actionStore;
+        _timeProvider = timeProvider;
+    }
+
+    public async ValueTask<SupportActionResult> RequestAsync(
+        SupportConversationContext context,
+        string reason,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        var request = context.Request;
+        var idempotencyKey = ResolveIdempotencyKey(request, context.ConversationId);
+        var decision = _actionPolicy.EvaluateSpecialistFollowUp(request, reason);
+        if (!decision.Allowed)
+        {
+            var denied = new SupportActionResult(
+                ActionName,
+                "denied",
+                Applied: false,
+                AlreadyApplied: false,
+                decision.Reason,
+                idempotencyKey,
+                _timeProvider.GetUtcNow());
+            context.ActionResults.Add(denied);
+            return denied;
+        }
+
+        var action = await _actionStore.RequestSpecialistFollowUpAsync(
+            new SupportActionRequest(
+                context.ConversationId,
+                context.CorrelationId,
+                request.TicketId,
+                request.CustomerId,
+                reason,
+                idempotencyKey),
+            cancellationToken);
+        context.ActionResults.Add(action);
+        return action;
+    }
+
+    private static string ResolveIdempotencyKey(
+        SupportRequest request,
+        string conversationId) =>
+        string.IsNullOrWhiteSpace(request.IdempotencyKey)
+            ? $"{ActionName}:{conversationId}:{request.TicketId}:{request.CustomerId}"
+            : request.IdempotencyKey.Trim();
+}
+
 public interface ISupportActionStore
 {
     ValueTask<SupportActionResult> RequestSpecialistFollowUpAsync(

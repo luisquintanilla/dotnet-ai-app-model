@@ -44,6 +44,37 @@ public sealed class InMemoryTicketStore : ITicketStore
     }
 }
 
+public sealed class SupportActionToolFactory
+{
+    private readonly ITicketStore _ticketStore;
+    private readonly SupportSpecialistFollowUpService _specialistFollowUpService;
+
+    public SupportActionToolFactory(
+        ITicketStore ticketStore,
+        SupportSpecialistFollowUpService specialistFollowUpService)
+    {
+        _ticketStore = ticketStore;
+        _specialistFollowUpService = specialistFollowUpService;
+    }
+
+    public IReadOnlyList<AIFunction> Create(
+        SupportConversationContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return
+        [
+            SupportTools.CreateTicketLookupFunction(_ticketStore),
+            SupportTools.CreateSpecialistFollowUpFunction(
+                (reason, cancellationToken) =>
+                    _specialistFollowUpService.RequestAsync(
+                        context,
+                        reason,
+                        cancellationToken))
+        ];
+    }
+}
+
 public static class SupportTools
 {
     public static AIFunction CreateTicketLookupFunction(ITicketStore ticketStore)

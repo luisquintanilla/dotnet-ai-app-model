@@ -8,12 +8,26 @@ This file records the implementation details that are easy to miss when reducing
 - The OpenAI path uses the official `OpenAI.Chat.ChatClient` and `AsIChatClient()` from `Microsoft.Extensions.AI.OpenAI`. Provider selection is explicit through `SupportModel:Provider`; a missing key is an options-validation failure rather than an implicit fallback. `SupportModelOptions` and `SupportWorkOptions` keep model/provider settings separate from queue capacity.
 - MEAI function invocation is a chat-client pipeline concern. The app passes an `AIFunction` in `ChatOptions.Tools` and adds `UseFunctionInvocation`; no application-owned tool-call loop is needed.
 - A function result can arrive at a scripted inner client as a serialized `JsonElement` after the MEAI invocation pipeline performs the round trip. The scripted provider accepts both its typed result and that JSON representation so tests stay deterministic while exercising the real invocation path.
-- The application uses one domain-named `SupportApplication` for the buffered and streaming use cases. The methods stay separate because MEAI exposes `ChatResponse` and `ChatResponseUpdate`, while request-scoped `AIFunctionFactory` closures carry support policy and correlation context.
+- The application uses one domain-named `SupportApplication` for the buffered
+  and streaming use cases. The methods stay separate because MEAI exposes
+  `ChatResponse` and `ChatResponseUpdate`.
+- `SupportConversationService`, `SupportModelContextFactory`, and
+  `SupportActionToolFactory` are scoped application-local services. They
+  separate conversation persistence, MEAI request construction, and
+  request-scoped tool creation without wrapping `IChatClient`.
+- `SupportSpecialistFollowUpService` owns the policy and idempotency boundary
+  used by the specialist tool. The closure carries the prepared support
+  context, so a model-provided argument cannot bypass support policy or audit
+  data.
 
 ## Hosting and test environment
 
 - The parent `C:\Dev` checkout supplies Arcade `Directory.Build.props`/`Directory.Build.targets` files. Those files are not part of this repository and import missing analyzer projects when inherited. The repository-local `Directory.Build.props` and empty `Directory.Build.targets` establish the sample's own build boundary.
 - `ActivitySource` instrumentation is emitted by `SupportApplication`, but this reference app does not register an exporter. Applications embedding the slice can connect the source to their existing OpenTelemetry configuration.
+- The singleton `SupportWorker` deliberately depends only on
+  `IServiceScopeFactory` and the support work channel. It creates a scope for
+  each work-item ID and resolves the scoped `SupportWorkItemProcessor`, which
+  owns status transitions, failure isolation, and processing logs.
 
 ## Intentional limitations
 
@@ -34,7 +48,7 @@ This file records the implementation details that are easy to miss when reducing
 - Work-item status is not channel state. A status record is created before
   enqueueing, transitions independently of channel delivery, and records an
   individual failure while the worker continues.
-- The required glue is small and ordinary: one application service, three
-  support-specific ports, in-memory adapters, and endpoint/worker projections.
-  There is not yet enough repeated evidence to extract an AI handler or
-  universal event model.
+- The required glue is small and ordinary: one domain-named application
+  coordinator, cohesive scoped support services, three support-specific ports,
+  in-memory adapters, and endpoint/worker projections. There is not yet enough
+  repeated evidence to extract an AI handler or universal event model.

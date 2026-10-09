@@ -1,43 +1,28 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Text;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Options;
 
 namespace DotnetAiAppModel.SupportAssistant;
 
 public sealed partial class SupportApplication
 {
-    private const string SpecialistFollowUpActionName = "request_specialist_follow_up";
     private static readonly ActivitySource ActivitySource =
         new("DotnetAiAppModel.SupportAssistant");
 
     private readonly IChatClient _chatClient;
-    private readonly ITicketStore _ticketStore;
-    private readonly ISupportConversationStore _conversationStore;
-    private readonly ISupportActionStore _actionStore;
-    private readonly SupportActionPolicy _actionPolicy;
-    private readonly SupportModelOptions _options;
-    private readonly TimeProvider _timeProvider;
+    private readonly SupportConversationService _conversationService;
+    private readonly SupportModelContextFactory _modelContextFactory;
     private readonly ILogger<SupportApplication> _logger;
 
     public SupportApplication(
         IChatClient chatClient,
-        ITicketStore ticketStore,
-        ISupportConversationStore conversationStore,
-        ISupportActionStore actionStore,
-        SupportActionPolicy actionPolicy,
-        IOptions<SupportModelOptions> options,
-        TimeProvider timeProvider,
+        SupportConversationService conversationService,
+        SupportModelContextFactory modelContextFactory,
         ILogger<SupportApplication> logger)
     {
         _chatClient = chatClient;
-        _ticketStore = ticketStore;
-        _conversationStore = conversationStore;
-        _actionStore = actionStore;
-        _actionPolicy = actionPolicy;
-        _options = options.Value;
-        _timeProvider = timeProvider;
+        _conversationService = conversationService;
+        _modelContextFactory = modelContextFactory;
         _logger = logger;
     }
 
@@ -48,14 +33,18 @@ public sealed partial class SupportApplication
         EnsureValid(request);
 
         using var activity = ActivitySource.StartActivity("support.application.complete");
-        var prepared = await PrepareAsync(request, activity, cancellationToken);
+        var prepared = await _conversationService.PrepareAsync(
+            request,
+            cancellationToken);
+        SetActivityTags(activity, prepared);
         using var scope = BeginScope(prepared);
+        var modelContext = _modelContextFactory.Create(prepared);
 
         try
         {
             var response = await _chatClient.GetResponseAsync(
-                prepared.Messages,
-                CreateChatOptions(prepared.Tools),
+                modelContext.Messages,
+                modelContext.Options,
                 cancellationToken);
 
             var answer = response.Text?.Trim();
@@ -65,13 +54,16 @@ public sealed partial class SupportApplication
                     "The chat client returned an empty support response.");
             }
 
-            await AppendAssistantTurnAsync(prepared, answer, cancellationToken);
+            await _conversationService.AppendAssistantTurnAsync(
+                prepared,
+                answer,
+                cancellationToken);
             return new SupportResponse(
                 answer,
                 prepared.Request.TicketId,
                 prepared.ConversationId,
                 prepared.CorrelationId,
-                prepared.ActionResults.ToArray());
+                modelContext.ActionResults.ToArray());
         }
         finally
         {
@@ -89,17 +81,21 @@ public sealed partial class SupportApplication
         EnsureValid(request);
 
         using var activity = ActivitySource.StartActivity("support.application.stream");
-        var prepared = await PrepareAsync(request, activity, cancellationToken);
+        var prepared = await _conversationService.PrepareAsync(
+            request,
+            cancellationToken);
+        SetActivityTags(activity, prepared);
         using var scope = BeginScope(prepared);
-        var answer = new StringBuilder();
+        var modelContext = _modelContextFactory.Create(prepared);
+        var answer = new System.Text.StringBuilder();
         var yieldedText = false;
 
         try
         {
             await foreach (var update in _chatClient
                                .GetStreamingResponseAsync(
-                                   prepared.Messages,
-                                   CreateChatOptions(prepared.Tools),
+                                   modelContext.Messages,
+                                   modelContext.Options,
                                    cancellationToken)
                                .WithCancellation(cancellationToken))
             {
@@ -118,7 +114,7 @@ public sealed partial class SupportApplication
                     "The chat client returned no text updates.");
             }
 
-            await AppendAssistantTurnAsync(
+            await _conversationService.AppendAssistantTurnAsync(
                 prepared,
                 answer.ToString().Trim(),
                 cancellationToken);
@@ -132,147 +128,17 @@ public sealed partial class SupportApplication
         }
     }
 
-    private async ValueTask<PreparedSupportRequest> PrepareAsync(
-        SupportRequest request,
+    private static void SetActivityTags(
         Activity? activity,
-        CancellationToken cancellationToken)
+        SupportConversationContext prepared)
     {
-        var correlationId = request.CorrelationId ?? Guid.NewGuid().ToString("N");
-        var requestWithCorrelation = request with { CorrelationId = correlationId };
-        var conversationId = request.ResolveConversationId(correlationId);
-        var conversation = await _conversationStore.LoadAsync(
-            conversationId,
-            cancellationToken);
-
-        await _conversationStore.AppendAsync(
-            conversationId,
-            new SupportConversationTurn(
-                SupportConversationRole.Customer,
-                request.Message,
-                correlationId,
-                _timeProvider.GetUtcNow()),
-            cancellationToken);
-
-        var actionResults = new List<SupportActionResult>();
-        var tools = new[]
-        {
-            SupportTools.CreateTicketLookupFunction(_ticketStore),
-            SupportTools.CreateSpecialistFollowUpFunction(
-                (reason, token) => RequestSpecialistFollowUpAsync(
-                    requestWithCorrelation,
-                    conversationId,
-                    correlationId,
-                    reason,
-                    actionResults,
-                    token))
-        };
-
-        activity?.SetTag("support.correlation_id", correlationId);
-        activity?.SetTag("support.conversation_id", conversationId);
-        activity?.SetTag("support.ticket_id", request.TicketId);
-        activity?.SetTag("support.customer_id", request.CustomerId);
-
-        return new PreparedSupportRequest(
-            requestWithCorrelation,
-            correlationId,
-            conversationId,
-            CreateMessages(conversation, request),
-            tools,
-            actionResults);
+        activity?.SetTag("support.correlation_id", prepared.CorrelationId);
+        activity?.SetTag("support.conversation_id", prepared.ConversationId);
+        activity?.SetTag("support.ticket_id", prepared.Request.TicketId);
+        activity?.SetTag("support.customer_id", prepared.Request.CustomerId);
     }
 
-    private async ValueTask AppendAssistantTurnAsync(
-        PreparedSupportRequest prepared,
-        string answer,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(answer))
-        {
-            throw new InvalidOperationException(
-                "The support application cannot persist an empty assistant turn.");
-        }
-
-        await _conversationStore.AppendAsync(
-            prepared.ConversationId,
-            new SupportConversationTurn(
-                SupportConversationRole.SupportAgent,
-                answer,
-                prepared.CorrelationId,
-                _timeProvider.GetUtcNow()),
-            cancellationToken);
-    }
-
-    private async ValueTask<SupportActionResult> RequestSpecialistFollowUpAsync(
-        SupportRequest request,
-        string conversationId,
-        string correlationId,
-        string reason,
-        List<SupportActionResult> actionResults,
-        CancellationToken cancellationToken)
-    {
-        var decision = _actionPolicy.EvaluateSpecialistFollowUp(request, reason);
-        if (!decision.Allowed)
-        {
-            var denied = new SupportActionResult(
-                SpecialistFollowUpActionName,
-                "denied",
-                Applied: false,
-                AlreadyApplied: false,
-                decision.Reason,
-                ResolveIdempotencyKey(request, conversationId),
-                _timeProvider.GetUtcNow());
-            actionResults.Add(denied);
-            return denied;
-        }
-
-        var action = await _actionStore.RequestSpecialistFollowUpAsync(
-            new SupportActionRequest(
-                conversationId,
-                correlationId,
-                request.TicketId,
-                request.CustomerId,
-                reason,
-                ResolveIdempotencyKey(request, conversationId)),
-            cancellationToken);
-        actionResults.Add(action);
-        return action;
-    }
-
-    private ChatOptions CreateChatOptions(IReadOnlyList<AIFunction> tools) =>
-        new()
-        {
-            Instructions = _options.SystemPrompt,
-            Tools = tools.Cast<AITool>().ToList(),
-            AllowMultipleToolCalls = false
-        };
-
-    private static List<ChatMessage> CreateMessages(
-        SupportConversation conversation,
-        SupportRequest request)
-    {
-        var messages = conversation.Turns
-            .Select(turn => new ChatMessage(
-                turn.Role == SupportConversationRole.Customer
-                    ? ChatRole.User
-                    : ChatRole.Assistant,
-                turn.Text))
-            .ToList();
-
-        var currentMessage = request.TicketId is null
-            ? request.Message
-            : $"{request.Message}{Environment.NewLine}Ticket ID: {request.TicketId}";
-        messages.Add(new ChatMessage(ChatRole.User, currentMessage));
-        return messages;
-    }
-
-    private static string ResolveIdempotencyKey(
-        SupportRequest request,
-        string conversationId) =>
-        string.IsNullOrWhiteSpace(request.IdempotencyKey)
-            ? $"{SpecialistFollowUpActionName}:{conversationId}:{request.TicketId}:{request.CustomerId}"
-            : request.IdempotencyKey.Trim();
-
-    private IDisposable? BeginScope(PreparedSupportRequest prepared) =>
+    private IDisposable? BeginScope(SupportConversationContext prepared) =>
         _logger.BeginScope(new Dictionary<string, object?>
         {
             ["SupportCorrelationId"] = prepared.CorrelationId,
@@ -292,14 +158,6 @@ public sealed partial class SupportApplication
                 nameof(request));
         }
     }
-
-    private sealed record PreparedSupportRequest(
-        SupportRequest Request,
-        string CorrelationId,
-        string ConversationId,
-        IReadOnlyList<ChatMessage> Messages,
-        IReadOnlyList<AIFunction> Tools,
-        List<SupportActionResult> ActionResults);
 
     [LoggerMessage(
         Level = LogLevel.Information,

@@ -74,9 +74,7 @@ app.MapPost(
     "/support/queue",
     async (
         SupportRequest request,
-        SupportWorkChannel queue,
-        ISupportWorkStore workStore,
-        TimeProvider timeProvider,
+        SupportWorkSubmissionService submissionService,
         CancellationToken cancellationToken) =>
     {
         var errors = SupportRequestValidation.Validate(request);
@@ -85,38 +83,22 @@ app.MapPost(
             return Results.ValidationProblem(errors);
         }
 
-        var correlationId = Guid.NewGuid().ToString("N");
-        var queuedRequest = request with { CorrelationId = correlationId };
-        var workItem = await workStore.CreateAsync(
-            queuedRequest,
-            correlationId,
-            timeProvider.GetUtcNow(),
+        var submission = await submissionService.SubmitAsync(
+            request,
             cancellationToken);
-
-        if (!queue.TryEnqueue(workItem.WorkItemId))
-        {
-            await workStore.MarkFailedAsync(
-                workItem.WorkItemId,
-                "The support work queue is full.",
-                timeProvider.GetUtcNow(),
-                CancellationToken.None);
-            var rejectedStatusUrl = $"/support/queue/{workItem.WorkItemId}";
-            return Results.Json(
-                new QueueAcceptedResponse(
-                    correlationId,
-                    workItem.WorkItemId,
-                    rejectedStatusUrl,
-                    "failed"),
-                statusCode: StatusCodes.Status429TooManyRequests);
-        }
-
-        var statusUrl = $"/support/queue/{workItem.WorkItemId}";
-        return Results.Accepted(
+        var statusUrl = SupportWorkItemStatusProjection.GetStatusUrl(
+            submission.WorkItem.WorkItemId);
+        var response = new QueueAcceptedResponse(
+            submission.WorkItem.CorrelationId,
+            submission.WorkItem.WorkItemId,
             statusUrl,
-            new QueueAcceptedResponse(
-                correlationId,
-                workItem.WorkItemId,
-                statusUrl));
+            submission.WorkItem.Status.ToString().ToLowerInvariant());
+
+        return submission.Enqueued
+            ? Results.Accepted(statusUrl, response)
+            : Results.Json(
+                response,
+                statusCode: StatusCodes.Status429TooManyRequests);
     });
 
 app.MapGet(
@@ -129,15 +111,7 @@ app.MapGet(
         var workItem = await workStore.GetAsync(workItemId, cancellationToken);
         return workItem is null
             ? Results.NotFound()
-            : Results.Ok(new SupportWorkItemStatusResponse(
-                workItem.WorkItemId,
-                workItem.CorrelationId,
-                workItem.Status.ToString().ToLowerInvariant(),
-                workItem.CreatedAt,
-                workItem.StartedAt,
-                workItem.CompletedAt,
-                workItem.Response,
-                workItem.Error));
+            : Results.Ok(SupportWorkItemStatusProjection.ToResponse(workItem));
     });
 
 app.Run();

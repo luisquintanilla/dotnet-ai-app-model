@@ -24,8 +24,16 @@ The sample does not standardize a second abstraction over these mechanisms.
 These semantics belong to the support case because they describe its state and
 policy:
 
-- `SupportApplication` loads and saves conversation turns, constructs the
-  support model context, creates request-scoped tools, and projects results;
+- `SupportApplication` is the use-case coordinator for buffered and streaming
+  support responses;
+- `SupportConversationService` prepares correlation and conversation state and
+  persists the customer turn before model execution and the assistant turn
+  after a complete response;
+- `SupportModelContextFactory` constructs the MEAI messages and `ChatOptions`;
+  `SupportActionToolFactory` creates request-scoped tools without hiding
+  `IChatClient`;
+- `SupportSpecialistFollowUpService` owns the policy-gated action closure,
+  correlation, idempotency, and action-result collection;
 - `ISupportConversationStore` and `ISupportActionStore` are small ports for
   support state and support effects;
 - `SupportActionPolicy` requires a ticket, customer identity, reason, and an
@@ -35,7 +43,20 @@ policy:
 - `ISupportWorkStore` models the support-specific `pending` -> `processing` ->
   `completed`/`failed` lifecycle while `SupportWorkChannel` only delivers work
   item IDs;
-- HTTP and worker code are thin adapters over the same application service.
+- `SupportWorkSubmissionService` owns work-item creation, enqueueing, and the
+  queue-full rejection transition;
+- `SupportWorkItemProcessor` owns one work item's status transitions, failure
+  isolation, and processing logs;
+- HTTP endpoints are thin adapters over the application and submission
+  services. `SupportWorker` is a singleton channel consumer that uses
+  `IServiceScopeFactory` to resolve a scoped processor for each ID.
+
+These services are ordinary DI composition, not a new framework. The
+application-local boundary is the support behavior they coordinate; it is not
+an abstraction over `IChatClient`, a universal session/run type, or a generic
+work-item engine. Services are concrete where the sample has no independent
+port to substitute, while stores and the model client remain interfaces at
+the boundaries that need replacement or testing.
 
 Model/provider settings live in `SupportModelOptions`, while queue capacity
 lives in `SupportWorkOptions`; the split keeps deployment/model configuration
@@ -44,7 +65,8 @@ framework.
 
 The request-scoped action closure is important: a model-provided argument
 cannot bypass the application's policy, correlation, idempotency, or audit
-context.
+context. The model context factory and tool factory make that boundary
+explicit while leaving MEAI types visible at the application edge.
 
 ## What is not standardized yet
 

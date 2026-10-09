@@ -8,16 +8,20 @@ namespace DotnetAiAppModel.SupportAssistant.Tests;
 internal sealed class TestSupportApplicationHost : IDisposable
 {
     private readonly ServiceProvider _services;
+    private readonly IServiceScope _applicationScope;
 
     private TestSupportApplicationHost(ServiceProvider services)
     {
         _services = services;
-        Application = services.GetRequiredService<SupportApplication>();
-        ConversationStore = services.GetRequiredService<InMemorySupportConversationStore>();
-        ActionStore = services.GetRequiredService<InMemorySupportActionStore>();
-        WorkStore = services.GetRequiredService<InMemorySupportWorkStore>();
-        WorkChannel = services.GetRequiredService<SupportWorkChannel>();
-        TimeProvider = services.GetRequiredService<TimeProvider>();
+        _applicationScope = services.CreateScope();
+        var scopedServices = _applicationScope.ServiceProvider;
+        Application = scopedServices.GetRequiredService<SupportApplication>();
+        ConversationStore = scopedServices.GetRequiredService<InMemorySupportConversationStore>();
+        ActionStore = scopedServices.GetRequiredService<InMemorySupportActionStore>();
+        WorkStore = scopedServices.GetRequiredService<InMemorySupportWorkStore>();
+        WorkChannel = scopedServices.GetRequiredService<SupportWorkChannel>();
+        WorkSubmission = scopedServices.GetRequiredService<SupportWorkSubmissionService>();
+        TimeProvider = scopedServices.GetRequiredService<TimeProvider>();
     }
 
     public SupportApplication Application { get; }
@@ -29,6 +33,8 @@ internal sealed class TestSupportApplicationHost : IDisposable
     public InMemorySupportWorkStore WorkStore { get; }
 
     public SupportWorkChannel WorkChannel { get; }
+
+    public SupportWorkSubmissionService WorkSubmission { get; }
 
     public TimeProvider TimeProvider { get; }
 
@@ -82,12 +88,26 @@ internal sealed class TestSupportApplicationHost : IDisposable
             {
                 QueueCapacity = queueCapacity
             }));
-        services.AddSingleton<SupportApplication>();
+        services.AddScoped<SupportConversationService>();
+        services.AddScoped<SupportSpecialistFollowUpService>();
+        services.AddScoped<SupportActionToolFactory>();
+        services.AddScoped<SupportModelContextFactory>();
+        services.AddScoped<SupportApplication>();
+        services.AddScoped<SupportWorkSubmissionService>();
+        services.AddScoped<SupportWorkItemProcessor>();
 
-        return new TestSupportApplicationHost(services.BuildServiceProvider());
+        return new TestSupportApplicationHost(
+            services.BuildServiceProvider(new ServiceProviderOptions
+            {
+                ValidateScopes = true
+            }));
     }
 
-    public void Dispose() => _services.Dispose();
+    public void Dispose()
+    {
+        _applicationScope.Dispose();
+        _services.Dispose();
+    }
 }
 
 internal sealed class TestTimeProvider : TimeProvider, IDisposable

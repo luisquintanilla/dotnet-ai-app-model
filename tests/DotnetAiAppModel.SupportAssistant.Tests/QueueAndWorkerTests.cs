@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DotnetAiAppModel.SupportAssistant.Tests;
 
@@ -27,26 +28,14 @@ public sealed class QueueAndWorkerTests
         using var host = TestSupportApplicationHost.Create(
             timeProvider: time,
             queueCapacity: 1);
-        var first = await host.WorkStore.CreateAsync(
-            new SupportRequest("first"),
-            "correlation-1",
-            time.GetUtcNow());
-        Assert.True(host.WorkChannel.TryEnqueue(first.WorkItemId));
+        var first = await host.WorkSubmission.SubmitAsync(new SupportRequest("first"));
+        Assert.True(first.Enqueued);
 
-        var rejected = await host.WorkStore.CreateAsync(
-            new SupportRequest("second"),
-            "correlation-2",
-            time.GetUtcNow());
-        Assert.False(host.WorkChannel.TryEnqueue(rejected.WorkItemId));
+        var rejected = await host.WorkSubmission.SubmitAsync(new SupportRequest("second"));
 
-        var failed = await host.WorkStore.MarkFailedAsync(
-            rejected.WorkItemId,
-            "The support work queue is full.",
-            time.GetUtcNow());
-
-        Assert.NotNull(failed);
-        Assert.Equal(SupportWorkItemStatus.Failed, failed.Status);
-        Assert.Equal("The support work queue is full.", failed.Error);
+        Assert.False(rejected.Enqueued);
+        Assert.Equal(SupportWorkItemStatus.Failed, rejected.WorkItem.Status);
+        Assert.Equal("The support work queue is full.", rejected.WorkItem.Error);
     }
 
     [Fact]
@@ -97,9 +86,7 @@ public sealed class QueueAndWorkerTests
         using var host = TestSupportApplicationHost.Create(timeProvider: time);
         using var worker = new SupportWorker(
             host.WorkChannel,
-            host.WorkStore,
-            host.Application,
-            time,
+            host.Services.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<SupportWorker>.Instance);
 
         var workItem = await host.WorkStore.CreateAsync(
@@ -134,9 +121,7 @@ public sealed class QueueAndWorkerTests
             timeProvider: time);
         using var worker = new SupportWorker(
             host.WorkChannel,
-            host.WorkStore,
-            host.Application,
-            time,
+            host.Services.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<SupportWorker>.Instance);
 
         var first = await host.WorkStore.CreateAsync(

@@ -46,7 +46,13 @@ public static class ChatClientRegistration
         services.AddSingleton(serviceProvider =>
             new SupportWorkChannel(
                 serviceProvider.GetRequiredService<IOptions<SupportWorkOptions>>().Value.QueueCapacity));
-        services.AddSingleton<SupportApplication>();
+        services.AddScoped<SupportConversationService>();
+        services.AddScoped<SupportSpecialistFollowUpService>();
+        services.AddScoped<SupportActionToolFactory>();
+        services.AddScoped<SupportModelContextFactory>();
+        services.AddScoped<SupportApplication>();
+        services.AddScoped<SupportWorkSubmissionService>();
+        services.AddScoped<SupportWorkItemProcessor>();
         services.AddHostedService<SupportWorker>();
 
         return services;
