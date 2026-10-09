@@ -4,7 +4,8 @@ This repository is a small, runnable .NET 10 reference app for a support-assista
 
 - the default `scripted` provider is deterministic and requires no credentials;
 - the ticket lookup tool is created with `AIFunctionFactory` and invoked by the MEAI `UseFunctionInvocation` pipeline;
-- buffered, streaming SSE, and bounded in-memory queue endpoints invoke the same ordinary `SupportHandlers` methods;
+- application-owned `SupportRequestHandler` and `SupportStreamHandler` delegates bind the ordinary `SupportHandlers` methods once in DI;
+- buffered, streaming SSE, and bounded in-memory queue transports invoke those composed handlers;
 - `SupportWorker` consumes queued requests with normal `BackgroundService` and dependency injection.
 
 The app intentionally does not add a custom AI harness, universal response/event model, OpenAI-compatible `/responses` endpoints, durable run storage, or suspend/resume behavior.
@@ -60,10 +61,13 @@ Invoke-RestMethod http://localhost:5000/support/queue `
 
 The queue endpoint returns `202 Accepted` with a correlation ID. The response is an acceptance receipt only; the worker logs processing and does not expose a durable result endpoint.
 
-The HTTP endpoints and `SupportWorker` call the same application-owned handler
-methods directly. `SupportHandlers` is sample application code, not a required
-framework abstraction; a different application can map an endpoint directly to
-`IChatClient` or use any ordinary delegate/service it needs.
+The application composition registers `SupportRequestHandler` and
+`SupportStreamHandler` delegates that bind `IChatClient`, the ticket lookup
+function, options, and logging once. The HTTP endpoints only validate requests
+and format HTTP/SSE responses; `SupportWorker` invokes the same buffered
+delegate. `SupportHandlers` remains ordinary sample application code, not a
+required framework abstraction, and a different application can use any
+ordinary delegate or service it needs.
 
 ## Test
 

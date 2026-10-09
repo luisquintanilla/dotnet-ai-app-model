@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 
 namespace DotnetAiAppModel.SupportAssistant.Tests;
 
@@ -31,9 +30,7 @@ public sealed class QueueAndWorkerTests
         using var host = TestHandlerDependencies.Create(client);
         using var worker = new SupportWorker(
             channel,
-            host.ChatClient,
-            host.TicketLookup,
-            Options.Create(host.Options),
+            host.RequestHandler,
             NullLogger<SupportWorker>.Instance);
 
         await worker.StartAsync(CancellationToken.None);
@@ -58,9 +55,7 @@ public sealed class QueueAndWorkerTests
         using var host = TestHandlerDependencies.Create(client);
         using var worker = new SupportWorker(
             channel,
-            host.ChatClient,
-            host.TicketLookup,
-            Options.Create(host.Options),
+            host.RequestHandler,
             NullLogger<SupportWorker>.Instance);
 
         await worker.StartAsync(CancellationToken.None);

@@ -3,17 +3,13 @@ namespace DotnetAiAppModel.SupportAssistant.Tests;
 public sealed class StreamingTests
 {
     [Fact]
-    public async Task StreamingResponsePreservesUpdateOrder()
+    public async Task ComposedStreamingHandlerPreservesUpdateOrder()
     {
         using var host = TestHandlerDependencies.Create();
         var updates = new List<string>();
 
-        await foreach (var update in SupportHandlers.StreamAsync(
-                           new SupportRequest("Please explain the next step."),
-                           host.ChatClient,
-                           host.TicketLookup,
-                           host.Options,
-                           host.Logger))
+        await foreach (var update in host.StreamHandler(
+                           new SupportRequest("Please explain the next step.")))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {
@@ -28,17 +24,13 @@ public sealed class StreamingTests
     }
 
     [Fact]
-    public async Task StreamingToolCallReturnsTheFinalToolBackedText()
+    public async Task ComposedStreamingHandlerReturnsTheFinalToolBackedText()
     {
         using var host = TestHandlerDependencies.Create();
         var text = new List<string>();
 
-        await foreach (var update in SupportHandlers.StreamAsync(
-                           new SupportRequest("Can you check my ticket?", "SUP-1002"),
-                           host.ChatClient,
-                           host.TicketLookup,
-                           host.Options,
-                           host.Logger))
+        await foreach (var update in host.StreamHandler(
+                           new SupportRequest("Can you check my ticket?", "SUP-1002")))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {

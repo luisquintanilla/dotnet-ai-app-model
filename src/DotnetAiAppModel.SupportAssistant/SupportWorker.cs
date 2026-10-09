@@ -1,6 +1,4 @@
 using System.Threading.Channels;
-using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Options;
 
 namespace DotnetAiAppModel.SupportAssistant;
 
@@ -39,22 +37,16 @@ public sealed class SupportRequestChannel
 public sealed partial class SupportWorker : BackgroundService
 {
     private readonly SupportRequestChannel _queue;
-    private readonly IChatClient _chatClient;
-    private readonly AIFunction _ticketLookup;
-    private readonly SupportAssistantOptions _options;
+    private readonly SupportRequestHandler _handleRequest;
     private readonly ILogger<SupportWorker> _logger;
 
     public SupportWorker(
         SupportRequestChannel queue,
-        IChatClient chatClient,
-        AIFunction ticketLookup,
-        IOptions<SupportAssistantOptions> options,
+        SupportRequestHandler handleRequest,
         ILogger<SupportWorker> logger)
     {
         _queue = queue;
-        _chatClient = chatClient;
-        _ticketLookup = ticketLookup;
-        _options = options.Value;
+        _handleRequest = handleRequest;
         _logger = logger;
     }
 
@@ -72,13 +64,7 @@ public sealed partial class SupportWorker : BackgroundService
 
                 try
                 {
-                    await SupportHandlers.CompleteAsync(
-                        request,
-                        _chatClient,
-                        _ticketLookup,
-                        _options,
-                        _logger,
-                        stoppingToken);
+                    await _handleRequest(request, stoppingToken);
                     LogRequestProcessed(_logger);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

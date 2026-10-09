@@ -5,16 +5,12 @@ namespace DotnetAiAppModel.SupportAssistant.Tests;
 public sealed class SupportHandlerTests
 {
     [Fact]
-    public async Task BufferedResponseUsesTheScriptedClient()
+    public async Task BufferedResponseUsesTheComposedScriptedHandler()
     {
         using var host = TestHandlerDependencies.Create();
 
-        var response = await SupportHandlers.CompleteAsync(
-            new SupportRequest("How do I update my contact email?"),
-            host.ChatClient,
-            host.TicketLookup,
-            host.Options,
-            host.Logger);
+        var response = await host.RequestHandler(
+            new SupportRequest("How do I update my contact email?"));
 
         Assert.Equal(
             "Thanks for contacting support. We received your message and will follow up shortly.",
@@ -23,16 +19,12 @@ public sealed class SupportHandlerTests
     }
 
     [Fact]
-    public async Task ScriptedToolCallRoundTripInvokesTicketLookup()
+    public async Task ComposedBufferedHandlerInvokesTicketLookup()
     {
         using var host = TestHandlerDependencies.Create();
 
-        var response = await SupportHandlers.CompleteAsync(
-            new SupportRequest("What is the status of my ticket?", "SUP-1001"),
-            host.ChatClient,
-            host.TicketLookup,
-            host.Options,
-            host.Logger);
+        var response = await host.RequestHandler(
+            new SupportRequest("What is the status of my ticket?", "SUP-1001"));
 
         Assert.Equal(
             "Ticket SUP-1001 is open: A billing specialist is reviewing the duplicate charge.",
@@ -41,19 +33,15 @@ public sealed class SupportHandlerTests
     }
 
     [Fact]
-    public async Task BufferedResponsePropagatesCancellation()
+    public async Task ComposedBufferedHandlerPropagatesCancellation()
     {
         using var host = TestHandlerDependencies.Create(new CancellationChatClient());
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            SupportHandlers.CompleteAsync(
+            host.RequestHandler(
                 new SupportRequest("This request is canceled."),
-                host.ChatClient,
-                host.TicketLookup,
-                host.Options,
-                host.Logger,
                 cancellation.Token));
     }
 

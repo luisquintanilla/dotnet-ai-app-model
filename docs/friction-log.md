@@ -8,6 +8,7 @@ This file records the implementation details that are easy to miss when reducing
 - The OpenAI path uses the official `OpenAI.Chat.ChatClient` and `AsIChatClient()` from `Microsoft.Extensions.AI.OpenAI`. Provider selection is explicit through `SupportAssistant:Provider`; a missing key is an options-validation failure rather than an implicit fallback.
 - MEAI function invocation is a chat-client pipeline concern. The app passes an `AIFunction` in `ChatOptions.Tools` and adds `UseFunctionInvocation`; no application-owned tool-call loop is needed.
 - A function result can arrive at a scripted inner client as a serialized `JsonElement` after the MEAI invocation pipeline performs the round trip. The scripted provider accepts both its typed result and that JSON representation so tests stay deterministic while exercising the real invocation path.
+- The application composition registers separate buffered and streaming delegates around `SupportHandlers`. This binds the chat client, tool, options, and logger once while keeping transport adapters focused on validation, protocol formatting, and cancellation.
 
 ## Hosting and test environment
 
@@ -19,4 +20,4 @@ This file records the implementation details that are easy to miss when reducing
 - The queue is a bounded in-memory `Channel<SupportRequest>`. A full queue returns `429`; queued work is lost on process restart and there is no durable status/result store.
 - The streaming endpoint emits only text-bearing `ChatResponseUpdate` values as SSE `data` records and a final `complete` event. Function-call updates are consumed by MEAI's invocation pipeline and are not exposed as a second application-level event model.
 - The scripted provider is deterministic demonstration glue, not a model emulator. It recognizes the sample ticket IDs and returns fixed text; real deployments should select `openai` (or register another `IChatClient`) explicitly.
-- The HTTP endpoints and worker still have to bind the same handler dependencies (`IChatClient`, `AIFunction`, options, logger, and cancellation). This is the concrete seam to evaluate for a future transport adapter; no generic operation or assistant wrapper was introduced.
+- `SupportHandlers` still owns the application behavior, while `SupportRequestHandler` and `SupportStreamHandler` are app-owned composition delegates rather than a generic operation or assistant wrapper. The HTTP endpoints and worker share the buffered delegate without resolving `IServiceProvider` at the transport boundary.

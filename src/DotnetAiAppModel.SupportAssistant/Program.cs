@@ -1,8 +1,6 @@
 using System.Text.Json;
 using DotnetAiAppModel.SupportAssistant;
 using DotnetAiAppModel.SupportAssistant.Providers;
-using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddProblemDetails();
@@ -16,10 +14,7 @@ app.MapPost(
     "/support",
     async (
         SupportRequest request,
-        IChatClient chatClient,
-        AIFunction ticketLookup,
-        IOptions<SupportAssistantOptions> options,
-        ILoggerFactory loggerFactory,
+        SupportRequestHandler handleRequest,
         CancellationToken cancellationToken) =>
     {
         var errors = SupportRequestValidation.Validate(request);
@@ -28,13 +23,7 @@ app.MapPost(
             return Results.ValidationProblem(errors);
         }
 
-        var response = await SupportHandlers.CompleteAsync(
-            request,
-            chatClient,
-            ticketLookup,
-            options.Value,
-            loggerFactory.CreateLogger("SupportHandlers"),
-            cancellationToken);
+        var response = await handleRequest(request, cancellationToken);
 
         return Results.Ok(response);
     });
@@ -43,10 +32,7 @@ app.MapPost(
     "/support/stream",
     async (
         SupportRequest request,
-        IChatClient chatClient,
-        AIFunction ticketLookup,
-        IOptions<SupportAssistantOptions> options,
-        ILoggerFactory loggerFactory,
+        SupportStreamHandler handleStream,
         HttpContext httpContext,
         CancellationToken cancellationToken) =>
     {
@@ -62,13 +48,7 @@ app.MapPost(
         httpContext.Response.Headers.CacheControl = "no-cache";
 
         var wroteText = false;
-        await foreach (var update in SupportHandlers.StreamAsync(
-                           request,
-                           chatClient,
-                           ticketLookup,
-                           options.Value,
-                           loggerFactory.CreateLogger("SupportHandlers"),
-                           cancellationToken))
+        await foreach (var update in handleStream(request, cancellationToken))
         {
             if (string.IsNullOrEmpty(update.Text))
             {

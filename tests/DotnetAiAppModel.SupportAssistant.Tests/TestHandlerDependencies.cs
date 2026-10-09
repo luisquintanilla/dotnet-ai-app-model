@@ -2,36 +2,24 @@ using DotnetAiAppModel.SupportAssistant.Providers;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace DotnetAiAppModel.SupportAssistant.Tests;
 
 internal sealed class TestHandlerDependencies : IDisposable
 {
     private readonly ServiceProvider _services;
-    private readonly IChatClient _chatClient;
 
-    private TestHandlerDependencies(
-        ServiceProvider services,
-        IChatClient chatClient,
-        AIFunction ticketLookup,
-        SupportAssistantOptions options)
+    private TestHandlerDependencies(ServiceProvider services)
     {
         _services = services;
-        _chatClient = chatClient;
-        ChatClient = chatClient;
-        TicketLookup = ticketLookup;
-        Options = options;
-        Logger = NullLogger.Instance;
+        RequestHandler = services.GetRequiredService<SupportRequestHandler>();
+        StreamHandler = services.GetRequiredService<SupportStreamHandler>();
     }
 
-    public IChatClient ChatClient { get; }
+    public SupportRequestHandler RequestHandler { get; }
 
-    public AIFunction TicketLookup { get; }
-
-    public SupportAssistantOptions Options { get; }
-
-    public ILogger Logger { get; }
+    public SupportStreamHandler StreamHandler { get; }
 
     public static TestHandlerDependencies Create(
         IChatClient? client = null,
@@ -39,29 +27,38 @@ internal sealed class TestHandlerDependencies : IDisposable
     {
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
-        var services = serviceCollection.BuildServiceProvider();
-
-        var innerClient = client ?? new ScriptedChatClient("scripted-test");
-        var pipelinedClient = innerClient
-            .AsBuilder()
-            .UseFunctionInvocation(
-                services.GetRequiredService<ILoggerFactory>(),
-                functionClient => functionClient.MaximumIterationsPerRequest = 4)
-            .Build(services);
-
-        var function = SupportTools.CreateTicketLookupFunction(ticketStore ?? new InMemoryTicketStore());
         var options = new SupportAssistantOptions
         {
             Provider = "scripted",
             Model = "scripted-test"
         };
 
-        return new TestHandlerDependencies(services, pipelinedClient, function, options);
+        serviceCollection.AddSingleton<IChatClient>(serviceProvider =>
+        {
+            var innerClient = client ?? new ScriptedChatClient("scripted-test");
+            return innerClient
+                .AsBuilder()
+                .UseFunctionInvocation(
+                    serviceProvider.GetRequiredService<ILoggerFactory>(),
+                    functionClient => functionClient.MaximumIterationsPerRequest = 4)
+                .Build(serviceProvider);
+        });
+        serviceCollection.AddSingleton<ITicketStore>(
+            ticketStore ?? new InMemoryTicketStore());
+        serviceCollection.AddSingleton<AIFunction>(serviceProvider =>
+            SupportTools.CreateTicketLookupFunction(
+                serviceProvider.GetRequiredService<ITicketStore>()));
+        serviceCollection.AddSingleton<IOptions<SupportAssistantOptions>>(
+            Options.Create(options));
+        serviceCollection.AddSupportHandlers();
+
+        var services = serviceCollection.BuildServiceProvider();
+
+        return new TestHandlerDependencies(services);
     }
 
     public void Dispose()
     {
-        _chatClient.Dispose();
         _services.Dispose();
     }
 }

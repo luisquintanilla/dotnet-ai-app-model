@@ -1,3 +1,4 @@
+using DotnetAiAppModel.SupportAssistant;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -40,6 +41,7 @@ public static class ChatClientRegistration
         services.AddSingleton(serviceProvider =>
             new SupportRequestChannel(
                 serviceProvider.GetRequiredService<IOptions<SupportAssistantOptions>>().Value.QueueCapacity));
+        services.AddSupportHandlers();
         services.AddHostedService<SupportWorker>();
 
         return services;
