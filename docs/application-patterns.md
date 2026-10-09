@@ -58,6 +58,11 @@ work-item engine. Services are concrete where the sample has no independent
 port to substitute, while stores and the model client remain interfaces at
 the boundaries that need replacement or testing.
 
+The composition tests build the container with `ValidateScopes` and resolve
+the hosted worker from the root provider. This guards the singleton worker to
+scoped processor lifetime boundary while still verifying that application and
+processor instances are created per scope.
+
 Model/provider settings live in `SupportModelOptions`, while queue capacity
 lives in `SupportWorkOptions`; the split keeps deployment/model configuration
 separate from deferred-work capacity without inventing a general configuration
