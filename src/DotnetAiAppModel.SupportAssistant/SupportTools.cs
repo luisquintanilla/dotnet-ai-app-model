@@ -59,4 +59,19 @@ public static class SupportTools
                 Description = "Looks up the current status and summary for a support ticket."
             });
     }
+
+    public static AIFunction CreateSpecialistFollowUpFunction(
+        Func<string, CancellationToken, ValueTask<SupportActionResult>> requestFollowUp)
+    {
+        ArgumentNullException.ThrowIfNull(requestFollowUp);
+
+        return AIFunctionFactory.Create(
+            (string reason, CancellationToken cancellationToken) =>
+                requestFollowUp(reason, cancellationToken),
+            new AIFunctionFactoryOptions
+            {
+                Name = "request_specialist_follow_up",
+                Description = "Requests an idempotent specialist follow-up for an eligible support ticket."
+            });
+    }
 }

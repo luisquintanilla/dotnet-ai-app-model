@@ -80,11 +80,43 @@ public sealed class ScriptedChatClient : IChatClient
 
         if (functionResult is not null)
         {
-            return TextResponse(CreateTicketAnswer(functionResult.Result));
+            return TextResponse(
+                IsActionResult(functionResult.Result)
+                    ? CreateActionAnswer(functionResult.Result)
+                    : CreateTicketAnswer(functionResult.Result));
         }
 
         var ticketId = FindTicketId(materializedMessages);
-        var ticketFunction = options?.Tools?.OfType<AIFunction>().FirstOrDefault();
+        var specialistFunction = options?.Tools?
+            .OfType<AIFunction>()
+            .FirstOrDefault(function =>
+                string.Equals(
+                    function.Name,
+                    "request_specialist_follow_up",
+                    StringComparison.Ordinal));
+        if (specialistFunction is not null
+            && WantsSpecialistFollowUp(materializedMessages))
+        {
+            var functionCall = new FunctionCallContent(
+                "scripted-specialist-follow-up",
+                specialistFunction.Name,
+                new Dictionary<string, object?>
+                {
+                    ["reason"] = "The customer explicitly requested specialist follow-up."
+                });
+
+            return new ChatResponse(new ChatMessage(
+                ChatRole.Assistant,
+                new List<AIContent> { functionCall }));
+        }
+
+        var ticketFunction = options?.Tools?
+            .OfType<AIFunction>()
+            .FirstOrDefault(function =>
+                string.Equals(
+                    function.Name,
+                    "lookup_ticket",
+                    StringComparison.Ordinal));
         if (ticketId is not null && ticketFunction is not null)
         {
             var functionCall = new FunctionCallContent(
@@ -104,6 +136,26 @@ public sealed class ScriptedChatClient : IChatClient
             "Thanks for contacting support. We received your message and will follow up shortly.");
     }
 
+    private static string CreateActionAnswer(object? result)
+    {
+        var action = result switch
+        {
+            SupportActionResult typedAction => typedAction,
+            JsonElement json when json.ValueKind == JsonValueKind.Object =>
+                json.Deserialize<SupportActionResult>(JsonOptions),
+            _ => null
+        };
+
+        return action is not null
+            ? action.Status switch
+            {
+                "denied" => $"I could not request specialist follow-up: {action.Message}",
+                "already_applied" => action.Message,
+                _ => action.Message
+            }
+            : $"Specialist follow-up result: {result}";
+    }
+
     private static string CreateTicketAnswer(object? result)
     {
         var ticket = result switch
@@ -117,6 +169,31 @@ public sealed class ScriptedChatClient : IChatClient
         return ticket is not null
             ? $"Ticket {ticket.TicketId} is {ticket.Status}: {ticket.Summary}"
             : $"Ticket lookup completed: {result}";
+    }
+
+    private static bool IsActionResult(object? result) =>
+        result is SupportActionResult
+            || result is JsonElement json
+                && json.ValueKind == JsonValueKind.Object
+                && json.TryGetProperty("actionName", out _);
+
+    private static bool WantsSpecialistFollowUp(IEnumerable<ChatMessage> messages)
+    {
+        var latestUserMessage = messages
+            .Reverse()
+            .FirstOrDefault(message => message.Role == ChatRole.User);
+        return latestUserMessage?.Text?.Contains(
+                   "specialist",
+                   StringComparison.OrdinalIgnoreCase) == true
+            || latestUserMessage?.Text?.Contains(
+                   "human",
+                   StringComparison.OrdinalIgnoreCase) == true
+            || latestUserMessage?.Text?.Contains(
+                   "representative",
+                   StringComparison.OrdinalIgnoreCase) == true
+            || latestUserMessage?.Text?.Contains(
+                   "escalate",
+                   StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static string? FindTicketId(IEnumerable<ChatMessage> messages)

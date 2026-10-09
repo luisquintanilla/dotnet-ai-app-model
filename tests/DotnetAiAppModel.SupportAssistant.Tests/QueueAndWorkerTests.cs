@@ -7,144 +7,181 @@ public sealed class QueueAndWorkerTests
     [Fact]
     public async Task BoundedChannelRejectsWhenFull()
     {
-        var channel = new SupportRequestChannel(1);
-        var first = new SupportRequest("first");
-        var second = new SupportRequest("second");
+        var channel = new SupportWorkChannel(1);
 
-        Assert.True(channel.TryEnqueue(first));
-        Assert.False(channel.TryEnqueue(second));
+        Assert.True(channel.TryEnqueue("work-1"));
+        Assert.False(channel.TryEnqueue("work-2"));
 
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await foreach (var request in channel.ReadAllAsync(cancellation.Token))
+        await foreach (var workItemId in channel.ReadAllAsync(cancellation.Token))
         {
-            Assert.Same(first, request);
+            Assert.Equal("work-1", workItemId);
             break;
         }
     }
 
     [Fact]
-    public async Task WorkerConsumesQueuedRequestWithTheSameHandler()
+    public async Task FullQueueMarksCreatedWorkItemFailedInsteadOfLeavingItPending()
     {
-        var channel = new SupportRequestChannel(2);
-        var client = new RecordingChatClient();
-        using var host = TestHandlerDependencies.Create(client);
+        using var time = new TestTimeProvider();
+        using var host = TestSupportApplicationHost.Create(
+            timeProvider: time,
+            queueCapacity: 1);
+        var first = await host.WorkStore.CreateAsync(
+            new SupportRequest("first"),
+            "correlation-1",
+            time.GetUtcNow());
+        Assert.True(host.WorkChannel.TryEnqueue(first.WorkItemId));
+
+        var rejected = await host.WorkStore.CreateAsync(
+            new SupportRequest("second"),
+            "correlation-2",
+            time.GetUtcNow());
+        Assert.False(host.WorkChannel.TryEnqueue(rejected.WorkItemId));
+
+        var failed = await host.WorkStore.MarkFailedAsync(
+            rejected.WorkItemId,
+            "The support work queue is full.",
+            time.GetUtcNow());
+
+        Assert.NotNull(failed);
+        Assert.Equal(SupportWorkItemStatus.Failed, failed.Status);
+        Assert.Equal("The support work queue is full.", failed.Error);
+    }
+
+    [Fact]
+    public async Task WorkStoreTransitionsPendingProcessingAndCompleted()
+    {
+        using var time = new TestTimeProvider();
+        using var host = TestSupportApplicationHost.Create(timeProvider: time);
+        var request = new SupportRequest(
+            "queued",
+            "SUP-1001",
+            ConversationId: "queue-conversation");
+
+        var pending = await host.WorkStore.CreateAsync(
+            request,
+            "queue-correlation",
+            time.GetUtcNow());
+        Assert.Equal(SupportWorkItemStatus.Pending, pending.Status);
+
+        time.Advance(TimeSpan.FromMinutes(1));
+        var processing = await host.WorkStore.TryMarkProcessingAsync(
+            pending.WorkItemId,
+            time.GetUtcNow());
+        Assert.NotNull(processing);
+        Assert.Equal(SupportWorkItemStatus.Processing, processing.Status);
+        Assert.Equal(time.GetUtcNow(), processing.StartedAt);
+
+        var response = new SupportResponse(
+            "processed",
+            request.TicketId,
+            "queue-conversation",
+            "queue-correlation");
+        time.Advance(TimeSpan.FromMinutes(1));
+        var completed = await host.WorkStore.MarkCompletedAsync(
+            pending.WorkItemId,
+            response,
+            time.GetUtcNow());
+
+        Assert.NotNull(completed);
+        Assert.Equal(SupportWorkItemStatus.Completed, completed.Status);
+        Assert.Equal(response, completed.Response);
+        Assert.Equal(time.GetUtcNow(), completed.CompletedAt);
+    }
+
+    [Fact]
+    public async Task WorkerConsumesWorkItemAndCompletesIt()
+    {
+        using var time = new TestTimeProvider();
+        using var host = TestSupportApplicationHost.Create(timeProvider: time);
         using var worker = new SupportWorker(
-            channel,
-            host.RequestHandler,
+            host.WorkChannel,
+            host.WorkStore,
+            host.Application,
+            time,
             NullLogger<SupportWorker>.Instance);
 
+        var workItem = await host.WorkStore.CreateAsync(
+            new SupportRequest(
+                "queued",
+                "SUP-1001",
+                ConversationId: "worker-conversation")
+            {
+                CorrelationId = "queue-correlation"
+            },
+            "queue-correlation",
+            time.GetUtcNow());
+        Assert.True(host.WorkChannel.TryEnqueue(workItem.WorkItemId));
+
         await worker.StartAsync(CancellationToken.None);
-        Assert.True(channel.TryEnqueue(new SupportRequest("queued", "SUP-1001")
-        {
-            CorrelationId = "queue-correlation"
-        }));
+        var completed = await WaitForStatusAsync(
+            host.WorkStore,
+            workItem.WorkItemId,
+            SupportWorkItemStatus.Completed);
 
-        var request = await client.ReceivedRequest.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal("queued", request.Message);
-        Assert.Equal("SUP-1001", request.TicketId);
-        Assert.Equal("queue-correlation", request.CorrelationId);
-
+        Assert.NotNull(completed.Response);
+        Assert.Equal("queue-correlation", completed.Response.CorrelationId);
         await worker.StopAsync(CancellationToken.None);
     }
 
     [Fact]
-    public async Task WorkerLogsRequestFailureAndContinuesConsuming()
+    public async Task WorkerMarksFailureAndContinuesWithLaterWorkItem()
     {
-        var channel = new SupportRequestChannel(2);
-        var client = new FailingThenSuccessfulChatClient();
-        using var host = TestHandlerDependencies.Create(client);
+        using var time = new TestTimeProvider();
+        using var host = TestSupportApplicationHost.Create(
+            new FailingThenSuccessfulChatClient(),
+            timeProvider: time);
         using var worker = new SupportWorker(
-            channel,
-            host.RequestHandler,
+            host.WorkChannel,
+            host.WorkStore,
+            host.Application,
+            time,
             NullLogger<SupportWorker>.Instance);
 
+        var first = await host.WorkStore.CreateAsync(
+            new SupportRequest("first", ConversationId: "worker-first"),
+            "worker-first",
+            time.GetUtcNow());
+        var second = await host.WorkStore.CreateAsync(
+            new SupportRequest("second", ConversationId: "worker-second"),
+            "worker-second",
+            time.GetUtcNow());
+        Assert.True(host.WorkChannel.TryEnqueue(first.WorkItemId));
+        Assert.True(host.WorkChannel.TryEnqueue(second.WorkItemId));
+
         await worker.StartAsync(CancellationToken.None);
-        Assert.True(channel.TryEnqueue(new SupportRequest("first")));
-        Assert.True(channel.TryEnqueue(new SupportRequest("second")));
+        var failed = await WaitForStatusAsync(
+            host.WorkStore,
+            first.WorkItemId,
+            SupportWorkItemStatus.Failed);
+        var completed = await WaitForStatusAsync(
+            host.WorkStore,
+            second.WorkItemId,
+            SupportWorkItemStatus.Completed);
 
-        var calls = await client.CompletedCalls.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(2, calls);
-
+        Assert.Contains("intentional test failure", failed.Error);
+        Assert.Equal("processed", completed.Response?.Answer);
         await worker.StopAsync(CancellationToken.None);
     }
 
-    private sealed class RecordingChatClient : IChatClient
+    private static async Task<SupportWorkItem> WaitForStatusAsync(
+        InMemorySupportWorkStore store,
+        string workItemId,
+        SupportWorkItemStatus expectedStatus)
     {
-        public TaskCompletionSource<SupportRequest> ReceivedRequest { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
+        for (var attempt = 0; attempt < 100; attempt++)
         {
-            var text = messages.Single(message => message.Role == ChatRole.User).Text ?? string.Empty;
-            var ticketId = text.Split("Ticket ID: ", StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
-            ReceivedRequest.TrySetResult(new SupportRequest(
-                text.Split(Environment.NewLine, StringSplitOptions.None)[0],
-                ticketId)
+            var workItem = await store.GetAsync(workItemId);
+            if (workItem?.Status == expectedStatus)
             {
-                CorrelationId = "queue-correlation"
-            });
-
-            return Task.FromResult(
-                new ChatResponse(new ChatMessage(ChatRole.Assistant, "processed")));
-        }
-
-        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            await Task.Yield();
-            yield return new ChatResponseUpdate(ChatRole.Assistant, "processed");
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-        public void Dispose()
-        {
-        }
-    }
-
-    private sealed class FailingThenSuccessfulChatClient : IChatClient
-    {
-        private int _calls;
-
-        public TaskCompletionSource<int> CompletedCalls { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            var calls = Interlocked.Increment(ref _calls);
-            if (calls == 2)
-            {
-                CompletedCalls.TrySetResult(calls);
+                return workItem;
             }
 
-            return calls == 1
-                ? Task.FromException<ChatResponse>(
-                    new InvalidOperationException("intentional test failure"))
-                : Task.FromResult(
-                    new ChatResponse(new ChatMessage(ChatRole.Assistant, "processed")));
+            await Task.Delay(10);
         }
 
-        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            await Task.Yield();
-            yield return new ChatResponseUpdate(ChatRole.Assistant, "processed");
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-        public void Dispose()
-        {
-        }
+        throw new Xunit.Sdk.XunitException(
+            $"Work item '{workItemId}' did not reach {expectedStatus}.");
     }
 }

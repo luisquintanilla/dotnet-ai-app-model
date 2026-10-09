@@ -8,48 +8,59 @@ namespace DotnetAiAppModel.SupportAssistant.Providers;
 
 public static class ChatClientRegistration
 {
-    public static IServiceCollection AddSupportAssistant(
+    public static IServiceCollection AddSupportApplication(
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        services.AddOptions<SupportAssistantOptions>()
-            .Bind(configuration.GetSection(SupportAssistantOptions.SectionName))
+        services.AddOptions<SupportModelOptions>()
+            .Bind(configuration.GetSection(SupportModelOptions.SectionName))
             .Validate(
                 options => string.Equals(options.Provider, "scripted", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(options.Provider, "openai", StringComparison.OrdinalIgnoreCase),
-                "SupportAssistant:Provider must be either 'scripted' or 'openai'.")
+                "SupportModel:Provider must be either 'scripted' or 'openai'.")
             .Validate(
                 options => !string.IsNullOrWhiteSpace(options.Model),
-                "SupportAssistant:Model is required.")
-            .Validate(
-                options => options.QueueCapacity > 0,
-                "SupportAssistant:QueueCapacity must be greater than zero.")
+                "SupportModel:Model is required.")
             .Validate(
                 options => options.MaxToolIterations > 0,
-                "SupportAssistant:MaxToolIterations must be greater than zero.")
+                "SupportModel:MaxToolIterations must be greater than zero.")
             .Validate(
                 options => !string.Equals(options.Provider, "openai", StringComparison.OrdinalIgnoreCase)
                     || !string.IsNullOrWhiteSpace(options.OpenAiApiKey),
-                "SupportAssistant:OpenAiApiKey is required when SupportAssistant:Provider is 'openai'.")
+                "SupportModel:OpenAiApiKey is required when SupportModel:Provider is 'openai'.")
+            .ValidateOnStart();
+        services.AddOptions<SupportWorkOptions>()
+            .Bind(configuration.GetSection(SupportWorkOptions.SectionName))
+            .Validate(
+                options => options.QueueCapacity > 0,
+                "SupportWork:QueueCapacity must be greater than zero.")
             .ValidateOnStart();
 
         services.AddSingleton<ITicketStore, InMemoryTicketStore>();
-        services.AddSingleton<AIFunction>(serviceProvider =>
-            SupportTools.CreateTicketLookupFunction(
-                serviceProvider.GetRequiredService<ITicketStore>()));
         services.AddSingleton<IChatClient>(CreateChatClient);
+        services.AddSingleton<TimeProvider>(TimeProvider.System);
+        services.AddSingleton<ISupportConversationStore, InMemorySupportConversationStore>();
+        services.AddSingleton<SupportActionPolicy>();
+        services.AddSingleton<ISupportActionStore, InMemorySupportActionStore>();
+        services.AddSingleton<ISupportWorkStore, InMemorySupportWorkStore>();
         services.AddSingleton(serviceProvider =>
-            new SupportRequestChannel(
-                serviceProvider.GetRequiredService<IOptions<SupportAssistantOptions>>().Value.QueueCapacity));
-        services.AddSupportHandlers();
+            new SupportWorkChannel(
+                serviceProvider.GetRequiredService<IOptions<SupportWorkOptions>>().Value.QueueCapacity));
+        services.AddSingleton<SupportApplication>();
         services.AddHostedService<SupportWorker>();
 
         return services;
     }
 
+    [Obsolete("Use AddSupportApplication instead.")]
+    public static IServiceCollection AddSupportAssistant(
+        this IServiceCollection services,
+        IConfiguration configuration) =>
+        services.AddSupportApplication(configuration);
+
     private static IChatClient CreateChatClient(IServiceProvider serviceProvider)
     {
-        var options = serviceProvider.GetRequiredService<IOptions<SupportAssistantOptions>>().Value;
+        var options = serviceProvider.GetRequiredService<IOptions<SupportModelOptions>>().Value;
         var innerClient = options.Provider.ToLowerInvariant() switch
         {
             "scripted" => new ScriptedChatClient(options.Model),
@@ -66,12 +77,12 @@ public static class ChatClientRegistration
             .Build(serviceProvider);
     }
 
-    private static IChatClient CreateOpenAiClient(SupportAssistantOptions options)
+    private static IChatClient CreateOpenAiClient(SupportModelOptions options)
     {
         if (string.IsNullOrWhiteSpace(options.OpenAiApiKey))
         {
             throw new InvalidOperationException(
-                "SupportAssistant:OpenAiApiKey is required when SupportAssistant:Provider is 'openai'.");
+                "SupportModel:OpenAiApiKey is required when SupportModel:Provider is 'openai'.");
         }
 
         return new OpenAIChatClient(options.Model, options.OpenAiApiKey).AsIChatClient();

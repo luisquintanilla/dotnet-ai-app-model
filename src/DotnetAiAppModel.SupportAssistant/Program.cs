@@ -4,7 +4,7 @@ using DotnetAiAppModel.SupportAssistant.Providers;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddProblemDetails();
-builder.Services.AddSupportAssistant(builder.Configuration);
+builder.Services.AddSupportApplication(builder.Configuration);
 
 var app = builder.Build();
 
@@ -14,7 +14,7 @@ app.MapPost(
     "/support",
     async (
         SupportRequest request,
-        SupportRequestHandler handleRequest,
+        SupportApplication supportApplication,
         CancellationToken cancellationToken) =>
     {
         var errors = SupportRequestValidation.Validate(request);
@@ -23,7 +23,7 @@ app.MapPost(
             return Results.ValidationProblem(errors);
         }
 
-        var response = await handleRequest(request, cancellationToken);
+        var response = await supportApplication.HandleAsync(request, cancellationToken);
 
         return Results.Ok(response);
     });
@@ -32,7 +32,7 @@ app.MapPost(
     "/support/stream",
     async (
         SupportRequest request,
-        SupportStreamHandler handleStream,
+        SupportApplication supportApplication,
         HttpContext httpContext,
         CancellationToken cancellationToken) =>
     {
@@ -48,7 +48,7 @@ app.MapPost(
         httpContext.Response.Headers.CacheControl = "no-cache";
 
         var wroteText = false;
-        await foreach (var update in handleStream(request, cancellationToken))
+        await foreach (var update in supportApplication.StreamAsync(request, cancellationToken))
         {
             if (string.IsNullOrEmpty(update.Text))
             {
@@ -72,7 +72,12 @@ app.MapPost(
 
 app.MapPost(
     "/support/queue",
-    (SupportRequest request, SupportRequestChannel queue) =>
+    async (
+        SupportRequest request,
+        SupportWorkChannel queue,
+        ISupportWorkStore workStore,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken) =>
     {
         var errors = SupportRequestValidation.Validate(request);
         if (errors.Count > 0)
@@ -81,14 +86,58 @@ app.MapPost(
         }
 
         var correlationId = Guid.NewGuid().ToString("N");
-        if (!queue.TryEnqueue(request with { CorrelationId = correlationId }))
+        var queuedRequest = request with { CorrelationId = correlationId };
+        var workItem = await workStore.CreateAsync(
+            queuedRequest,
+            correlationId,
+            timeProvider.GetUtcNow(),
+            cancellationToken);
+
+        if (!queue.TryEnqueue(workItem.WorkItemId))
         {
-            return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+            await workStore.MarkFailedAsync(
+                workItem.WorkItemId,
+                "The support work queue is full.",
+                timeProvider.GetUtcNow(),
+                CancellationToken.None);
+            var rejectedStatusUrl = $"/support/queue/{workItem.WorkItemId}";
+            return Results.Json(
+                new QueueAcceptedResponse(
+                    correlationId,
+                    workItem.WorkItemId,
+                    rejectedStatusUrl,
+                    "failed"),
+                statusCode: StatusCodes.Status429TooManyRequests);
         }
 
+        var statusUrl = $"/support/queue/{workItem.WorkItemId}";
         return Results.Accepted(
-            $"/support/queue/{correlationId}",
-            new QueueAcceptedResponse(correlationId));
+            statusUrl,
+            new QueueAcceptedResponse(
+                correlationId,
+                workItem.WorkItemId,
+                statusUrl));
+    });
+
+app.MapGet(
+    "/support/queue/{workItemId}",
+    async (
+        string workItemId,
+        ISupportWorkStore workStore,
+        CancellationToken cancellationToken) =>
+    {
+        var workItem = await workStore.GetAsync(workItemId, cancellationToken);
+        return workItem is null
+            ? Results.NotFound()
+            : Results.Ok(new SupportWorkItemStatusResponse(
+                workItem.WorkItemId,
+                workItem.CorrelationId,
+                workItem.Status.ToString().ToLowerInvariant(),
+                workItem.CreatedAt,
+                workItem.StartedAt,
+                workItem.CompletedAt,
+                workItem.Response,
+                workItem.Error));
     });
 
 app.Run();
