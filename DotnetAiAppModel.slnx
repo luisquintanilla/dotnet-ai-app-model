@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DotnetAiAppModel.SupportAssistant/DotnetAiAppModel.SupportAssistant.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DotnetAiAppModel.SupportAssistant.Tests/DotnetAiAppModel.SupportAssistant.Tests.csproj" />
+  </Folder>
+</Solution>
