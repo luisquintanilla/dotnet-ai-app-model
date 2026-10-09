@@ -1,44 +1,31 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Options;
 
 namespace DotnetAiAppModel.SupportAssistant;
 
-public sealed class SupportAssistant
+public static class SupportHandlers
 {
-    private static readonly ActivitySource ActivitySource = new("DotnetAiAppModel.SupportAssistant");
+    private static readonly ActivitySource ActivitySource =
+        new("DotnetAiAppModel.SupportAssistant");
 
-    private readonly IChatClient _chatClient;
-    private readonly AIFunction _ticketLookup;
-    private readonly SupportAssistantOptions _options;
-    private readonly ILogger<SupportAssistant> _logger;
-
-    public SupportAssistant(
+    public static async Task<SupportResponse> CompleteAsync(
+        SupportRequest request,
         IChatClient chatClient,
         AIFunction ticketLookup,
-        IOptions<SupportAssistantOptions> options,
-        ILogger<SupportAssistant> logger)
-    {
-        _chatClient = chatClient;
-        _ticketLookup = ticketLookup;
-        _options = options.Value;
-        _logger = logger;
-    }
-
-    public async Task<SupportResponse> GetResponseAsync(
-        SupportRequest request,
+        SupportAssistantOptions options,
+        ILogger logger,
         CancellationToken cancellationToken = default)
     {
         EnsureValid(request);
 
-        using var activity = ActivitySource.StartActivity("support.assistant.response");
+        using var activity = ActivitySource.StartActivity("support.handler.complete");
         SetActivityTags(activity, request);
-        using var scope = BeginScope(request);
+        using var scope = BeginScope(logger, request);
 
-        var response = await _chatClient.GetResponseAsync(
+        var response = await chatClient.GetResponseAsync(
             CreateMessages(request),
-            CreateChatOptions(),
+            CreateChatOptions(ticketLookup, options),
             cancellationToken);
 
         if (string.IsNullOrWhiteSpace(response.Text))
@@ -49,20 +36,24 @@ public sealed class SupportAssistant
         return new SupportResponse(response.Text.Trim(), request.TicketId);
     }
 
-    public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+    public static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(
         SupportRequest request,
+        IChatClient chatClient,
+        AIFunction ticketLookup,
+        SupportAssistantOptions options,
+        ILogger logger,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         EnsureValid(request);
 
-        using var activity = ActivitySource.StartActivity("support.assistant.stream");
+        using var activity = ActivitySource.StartActivity("support.handler.stream");
         SetActivityTags(activity, request);
-        using var scope = BeginScope(request);
+        using var scope = BeginScope(logger, request);
 
         var yieldedText = false;
-        await foreach (var update in _chatClient.GetStreamingResponseAsync(
+        await foreach (var update in chatClient.GetStreamingResponseAsync(
                            CreateMessages(request),
-                           CreateChatOptions(),
+                           CreateChatOptions(ticketLookup, options),
                            cancellationToken).WithCancellation(cancellationToken))
         {
             if (!string.IsNullOrEmpty(update.Text))
@@ -79,11 +70,13 @@ public sealed class SupportAssistant
         }
     }
 
-    private ChatOptions CreateChatOptions() =>
+    private static ChatOptions CreateChatOptions(
+        AIFunction ticketLookup,
+        SupportAssistantOptions options) =>
         new()
         {
-            Instructions = _options.SystemPrompt,
-            Tools = [_ticketLookup],
+            Instructions = options.SystemPrompt,
+            Tools = [ticketLookup],
             AllowMultipleToolCalls = false
         };
 
@@ -96,14 +89,18 @@ public sealed class SupportAssistant
         return [new ChatMessage(ChatRole.User, message)];
     }
 
-    private IDisposable? BeginScope(SupportRequest request) =>
-        _logger.BeginScope(new Dictionary<string, object?>
+    private static IDisposable? BeginScope(
+        ILogger logger,
+        SupportRequest request) =>
+        logger.BeginScope(new Dictionary<string, object?>
         {
             ["SupportCorrelationId"] = request.CorrelationId ?? "direct",
             ["SupportTicketId"] = request.TicketId
         });
 
-    private static void SetActivityTags(Activity? activity, SupportRequest request)
+    private static void SetActivityTags(
+        Activity? activity,
+        SupportRequest request)
     {
         activity?.SetTag("support.correlation_id", request.CorrelationId);
         activity?.SetTag("support.ticket_id", request.TicketId);
@@ -116,7 +113,9 @@ public sealed class SupportAssistant
         var errors = SupportRequestValidation.Validate(request);
         if (errors.Count > 0)
         {
-            throw new ArgumentException(string.Join(" ", errors.Values.SelectMany(values => values)), nameof(request));
+            throw new ArgumentException(
+                string.Join(" ", errors.Values.SelectMany(values => values)),
+                nameof(request));
         }
     }
 }

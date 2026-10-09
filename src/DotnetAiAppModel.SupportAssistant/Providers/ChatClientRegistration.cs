@@ -40,7 +40,6 @@ public static class ChatClientRegistration
         services.AddSingleton(serviceProvider =>
             new SupportRequestChannel(
                 serviceProvider.GetRequiredService<IOptions<SupportAssistantOptions>>().Value.QueueCapacity));
-        services.AddSingleton<SupportAssistant>();
         services.AddHostedService<SupportWorker>();
 
         return services;

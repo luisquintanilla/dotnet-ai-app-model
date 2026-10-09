@@ -12,10 +12,11 @@ This file records the implementation details that are easy to miss when reducing
 ## Hosting and test environment
 
 - The parent `C:\Dev` checkout supplies Arcade `Directory.Build.props`/`Directory.Build.targets` files. Those files are not part of this repository and import missing analyzer projects when inherited. The repository-local `Directory.Build.props` and empty `Directory.Build.targets` establish the sample's own build boundary.
-- `ActivitySource` instrumentation is emitted by `SupportAssistant`, but this reference app does not register an exporter. Applications embedding the slice can connect the source to their existing OpenTelemetry configuration.
+- `ActivitySource` instrumentation is emitted by the ordinary `SupportHandlers` methods, but this reference app does not register an exporter. Applications embedding the slice can connect the source to their existing OpenTelemetry configuration.
 
 ## Intentional limitations
 
 - The queue is a bounded in-memory `Channel<SupportRequest>`. A full queue returns `429`; queued work is lost on process restart and there is no durable status/result store.
 - The streaming endpoint emits only text-bearing `ChatResponseUpdate` values as SSE `data` records and a final `complete` event. Function-call updates are consumed by MEAI's invocation pipeline and are not exposed as a second application-level event model.
 - The scripted provider is deterministic demonstration glue, not a model emulator. It recognizes the sample ticket IDs and returns fixed text; real deployments should select `openai` (or register another `IChatClient`) explicitly.
+- The HTTP endpoints and worker still have to bind the same handler dependencies (`IChatClient`, `AIFunction`, options, logger, and cancellation). This is the concrete seam to evaluate for a future transport adapter; no generic operation or assistant wrapper was introduced.

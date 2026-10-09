@@ -1,30 +1,39 @@
+using DotnetAiAppModel.SupportAssistant.Providers;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
-using DotnetAiAppModel.SupportAssistant.Providers;
 
 namespace DotnetAiAppModel.SupportAssistant.Tests;
 
-internal sealed class TestAssistantHost : IDisposable
+internal sealed class TestHandlerDependencies : IDisposable
 {
     private readonly ServiceProvider _services;
     private readonly IChatClient _chatClient;
 
-    private TestAssistantHost(
+    private TestHandlerDependencies(
         ServiceProvider services,
         IChatClient chatClient,
-        SupportAssistant assistant)
+        AIFunction ticketLookup,
+        SupportAssistantOptions options)
     {
         _services = services;
         _chatClient = chatClient;
-        Assistant = assistant;
+        ChatClient = chatClient;
+        TicketLookup = ticketLookup;
+        Options = options;
+        Logger = NullLogger.Instance;
     }
 
-    public SupportAssistant Assistant { get; }
+    public IChatClient ChatClient { get; }
 
-    public static TestAssistantHost Create(
+    public AIFunction TicketLookup { get; }
+
+    public SupportAssistantOptions Options { get; }
+
+    public ILogger Logger { get; }
+
+    public static TestHandlerDependencies Create(
         IChatClient? client = null,
         ITicketStore? ticketStore = null)
     {
@@ -41,17 +50,13 @@ internal sealed class TestAssistantHost : IDisposable
             .Build(services);
 
         var function = SupportTools.CreateTicketLookupFunction(ticketStore ?? new InMemoryTicketStore());
-        var assistant = new SupportAssistant(
-            pipelinedClient,
-            function,
-            Options.Create(new SupportAssistantOptions
-            {
-                Provider = "scripted",
-                Model = "scripted-test"
-            }),
-            NullLogger<SupportAssistant>.Instance);
+        var options = new SupportAssistantOptions
+        {
+            Provider = "scripted",
+            Model = "scripted-test"
+        };
 
-        return new TestAssistantHost(services, pipelinedClient, assistant);
+        return new TestHandlerDependencies(services, pipelinedClient, function, options);
     }
 
     public void Dispose()

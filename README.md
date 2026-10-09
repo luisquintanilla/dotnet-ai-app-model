@@ -4,7 +4,7 @@ This repository is a small, runnable .NET 10 reference app for a support-assista
 
 - the default `scripted` provider is deterministic and requires no credentials;
 - the ticket lookup tool is created with `AIFunctionFactory` and invoked by the MEAI `UseFunctionInvocation` pipeline;
-- buffered, streaming SSE, and bounded in-memory queue endpoints share the same `SupportAssistant`;
+- buffered, streaming SSE, and bounded in-memory queue endpoints invoke the same ordinary `SupportHandlers` methods;
 - `SupportWorker` consumes queued requests with normal `BackgroundService` and dependency injection.
 
 The app intentionally does not add a custom AI harness, universal response/event model, OpenAI-compatible `/responses` endpoints, durable run storage, or suspend/resume behavior.
@@ -59,6 +59,11 @@ Invoke-RestMethod http://localhost:5000/support/queue `
 ```
 
 The queue endpoint returns `202 Accepted` with a correlation ID. The response is an acceptance receipt only; the worker logs processing and does not expose a durable result endpoint.
+
+The HTTP endpoints and `SupportWorker` call the same application-owned handler
+methods directly. `SupportHandlers` is sample application code, not a required
+framework abstraction; a different application can map an endpoint directly to
+`IChatClient` or use any ordinary delegate/service it needs.
 
 ## Test
 

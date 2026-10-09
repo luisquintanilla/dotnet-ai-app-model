@@ -5,11 +5,15 @@ public sealed class StreamingTests
     [Fact]
     public async Task StreamingResponsePreservesUpdateOrder()
     {
-        using var host = TestAssistantHost.Create();
+        using var host = TestHandlerDependencies.Create();
         var updates = new List<string>();
 
-        await foreach (var update in host.Assistant.GetStreamingResponseAsync(
-                           new SupportRequest("Please explain the next step.")))
+        await foreach (var update in SupportHandlers.StreamAsync(
+                           new SupportRequest("Please explain the next step."),
+                           host.ChatClient,
+                           host.TicketLookup,
+                           host.Options,
+                           host.Logger))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {
@@ -26,11 +30,15 @@ public sealed class StreamingTests
     [Fact]
     public async Task StreamingToolCallReturnsTheFinalToolBackedText()
     {
-        using var host = TestAssistantHost.Create();
+        using var host = TestHandlerDependencies.Create();
         var text = new List<string>();
 
-        await foreach (var update in host.Assistant.GetStreamingResponseAsync(
-                           new SupportRequest("Can you check my ticket?", "SUP-1002")))
+        await foreach (var update in SupportHandlers.StreamAsync(
+                           new SupportRequest("Can you check my ticket?", "SUP-1002"),
+                           host.ChatClient,
+                           host.TicketLookup,
+                           host.Options,
+                           host.Logger))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {

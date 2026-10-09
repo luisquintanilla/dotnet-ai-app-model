@@ -24,14 +24,16 @@ public sealed class QueueAndWorkerTests
     }
 
     [Fact]
-    public async Task WorkerConsumesQueuedRequestWithTheSameAssistant()
+    public async Task WorkerConsumesQueuedRequestWithTheSameHandler()
     {
         var channel = new SupportRequestChannel(2);
         var client = new RecordingChatClient();
-        using var host = TestAssistantHost.Create(client);
+        using var host = TestHandlerDependencies.Create(client);
         using var worker = new SupportWorker(
             channel,
-            host.Assistant,
+            host.ChatClient,
+            host.TicketLookup,
+            Options.Create(host.Options),
             NullLogger<SupportWorker>.Instance);
 
         await worker.StartAsync(CancellationToken.None);
@@ -53,10 +55,12 @@ public sealed class QueueAndWorkerTests
     {
         var channel = new SupportRequestChannel(2);
         var client = new FailingThenSuccessfulChatClient();
-        using var host = TestAssistantHost.Create(client);
+        using var host = TestHandlerDependencies.Create(client);
         using var worker = new SupportWorker(
             channel,
-            host.Assistant,
+            host.ChatClient,
+            host.TicketLookup,
+            Options.Create(host.Options),
             NullLogger<SupportWorker>.Instance);
 
         await worker.StartAsync(CancellationToken.None);
